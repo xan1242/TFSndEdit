@@ -26,6 +26,7 @@ unsigned int AT3FileSize;
 char OutFileName[512];
 char DefFileName[512];
 char OutPath[512];
+char OutPathSHDS[512];
 char MkDirString[512];
 char EntryName[17];
 
@@ -80,6 +81,20 @@ struct vagoffsetpair
     int32_t offset; // relative to VAGDataStartPointer
     int32_t adsr_offset; // relative to VAGADSRDataPointer
 };
+
+// SHDS stuff
+void* SHDSbuffer;
+int16_t SHDSver;
+int32_t* SHDSoffsets;
+struct LoadPacAddr
+{
+    int32_t dummy1;
+    int32_t dummy2;
+    int32_t size;
+    int32_t dummy3;
+}*SHDSsizes;
+unsigned int PacCount;
+unsigned int SHDStotalsize;
 
 #ifdef WIN32
 DWORD GetDirectoryListing(const char* FolderPath)
@@ -579,29 +594,29 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     }
     else
     {
-        //if (GenEntry.HeaderSize == 0x30)
-        //{
+        if (GenEntry.HeaderSize == 0x30)
+        {
             GenEntry.AT3DataStartPointer = GenEntry.DataStartPointer;
             GenEntry.VAGDataStartPointer = GenEntry.DataStartPointer;
             GenEntry.VAGADSRDataPointer = GenEntry.DataStartPointer + at3_cursor;
             GenEntry.DataEndPointer = GenEntry.VAGADSRDataPointer;
-       // }
-       // else
-       // {
-      //      GenEntry.AT3DataStartPointer = GenEntry.DataStartPointer;
-       //     GenEntry.DataStartPointer = 0;
+        }
+        else
+        {
+            GenEntry.AT3DataStartPointer = GenEntry.DataStartPointer;
+            GenEntry.DataStartPointer = 0;
 
-      //  }
-        AlignedEnd = (GenEntry.DataStartPointer + at3_cursor + 0x800) & 0xFFFFF800;
+        }
+        AlignedEnd = (GenEntry.AT3DataStartPointer + at3_cursor + 0x800) & 0xFFFFF800;
     }
 
     GenEntry.EntrySize = AlignedEnd;
 
-    
-    
-
     // start writing to file...
     FilePos = ftell(OutFile);
+    // update SHDS info
+    SHDSoffsets[GenEntry.Index] = FilePos;
+    SHDSsizes[GenEntry.Index].size = GenEntry.EntrySize;
     // write header
     fwrite(&GenEntry, sizeof(snddat_entry), 1, OutFile);
     // if we're working with the new type with a name, write it in
@@ -807,27 +822,87 @@ int PackSndDat(char* InFolder, char* OutFilename)
     return 0;
 }
 
+int LoadSHDS(char* InFilename)
+{
+    FILE* fin = fopen(InFilename, "rb");
+    if (fin == NULL)
+    {
+        printf("ERROR: Error opening file for reading: %s\n", InFilename);
+        perror("ERROR");
+        return -1;
+    }
+
+    struct stat fst = { 0 };
+    stat(InFilename, &fst);
+    SHDStotalsize = fst.st_size;
+
+    SHDSbuffer = malloc(fst.st_size);
+    fread(SHDSbuffer, fst.st_size, 1, fin);
+    fclose(fin);
+
+    // get values and pointers
+    SHDSver = *(int16_t*)(((int)SHDSbuffer) + 0x8);
+    PacCount = *(int16_t*)(((int)SHDSbuffer) + 0xC) + *(int16_t*)(((int)SHDSbuffer) + 0x10);
+
+    int32_t pacoffsets = (*(int16_t*)(((int)SHDSbuffer) + 0xE)) & 0xFFFF;
+    pacoffsets = pacoffsets + PacCount;
+
+    if (SHDSver == 0x24)
+        pacoffsets = pacoffsets << 3;
+    else
+        pacoffsets = pacoffsets << 2;
+    pacoffsets = pacoffsets + 0x34;
+
+    SHDSsizes = (LoadPacAddr*)(pacoffsets + (int)SHDSbuffer);
+    SHDSoffsets = (int32_t*)(((PacCount << 4) + pacoffsets) + (int)SHDSbuffer);
+
+    return 0;
+}
+
+int WriteSHDS(char* OutFilename)
+{
+    strcpy(OutPathSHDS, OutFilename);
+    char* pp = strrchr(OutPathSHDS, '.');
+    if (pp)
+        *pp = 0;
+    strcat(OutPathSHDS, "_SHDS.bin");
+
+    FILE* fout = fopen(OutPathSHDS, "wb");
+    if (fout == NULL)
+    {
+        printf("ERROR: Error opening file for writing: %s\n", OutPathSHDS);
+        perror("ERROR");
+        return -1;
+    }
+    fwrite(SHDSbuffer, SHDStotalsize, 1, fout);
+    fclose(fout);
+
+    return 0;
+}
 
 int main(int argc, char *argv[])
 {
     printf("Yu-Gi-Oh! Tag Force SNDDAT repacker\n");
     if (argc < 2)
     {
-        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InDir [OutFile]\nUSAGE (pack single): %s -w InIniFile [OutFile]\n", argv[0], argv[0], argv[0]);
+        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\n", argv[0], argv[0], argv[0]);
         return -1;
     }
 
     if (argv[1][0] == '-' && argv[1][1] == 'w')
     {
-        if (argv[3] != NULL)
-            strcpy(OutPath, argv[3]);
+        if (argv[4] != NULL)
+            strcpy(OutPath, argv[4]);
         else
         {
-            strcpy(OutPath, argv[2]);
+            strcpy(OutPath, argv[3]);
             strcat(OutPath, ".bin");
         }
 
-        return PackSndDat(argv[2], OutPath);
+        LoadSHDS(argv[2]);
+        PackSndDat(argv[3], OutPath);
+        WriteSHDS(OutPath);
+        return 0;
     }
     // single write...
     if (argv[1][0] == '-' && argv[1][1] == 's')
