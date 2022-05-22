@@ -95,6 +95,8 @@ struct LoadPacAddr
 }*SHDSsizes;
 unsigned int PacCount;
 unsigned int SHDStotalsize;
+bool bTF6mode;
+unsigned int TF6voicepacoffset;
 
 #ifdef WIN32
 DWORD GetDirectoryListing(const char* FolderPath)
@@ -616,6 +618,8 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     FilePos = ftell(OutFile);
     // update SHDS info
     SHDSoffsets[GenEntry.Index] = FilePos;
+    if (bTF6mode)
+        SHDSoffsets[GenEntry.Index] = SHDSoffsets[GenEntry.Index] + TF6voicepacoffset;
     SHDSsizes[GenEntry.Index].size = GenEntry.EntrySize;
     // write header
     fwrite(&GenEntry, sizeof(snddat_entry), 1, OutFile);
@@ -856,6 +860,9 @@ int LoadSHDS(char* InFilename)
     SHDSsizes = (LoadPacAddr*)(pacoffsets + (int)SHDSbuffer);
     SHDSoffsets = (int32_t*)(((PacCount << 4) + pacoffsets) + (int)SHDSbuffer);
 
+    if (bTF6mode)
+        TF6voicepacoffset = SHDSoffsets[49];
+
     return 0;
 }
 
@@ -885,12 +892,15 @@ int main(int argc, char *argv[])
     printf("Yu-Gi-Oh! Tag Force SNDDAT repacker\n");
     if (argc < 2)
     {
-        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\n", argv[0], argv[0], argv[0]);
+        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack TF6): %s -w6 InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\n", argv[0], argv[0], argv[0], argv[0]);
         return -1;
     }
 
     if (argv[1][0] == '-' && argv[1][1] == 'w')
     {
+        if (argv[1][2] == '6')
+            bTF6mode = true;
+
         if (argv[4] != NULL)
             strcpy(OutPath, argv[4]);
         else
