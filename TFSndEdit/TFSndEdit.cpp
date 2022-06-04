@@ -1105,7 +1105,7 @@ int main(int argc, char *argv[])
     printf("Yu-Gi-Oh! Tag Force SNDDAT repacker\n");
     if (argc < 2)
     {
-        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (extraction TF1): %s -1 psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack TF6): %s -w6 InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\n", argv[0], argv[0], argv[0], argv[0], argv[0]);
+        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (extraction TF1): %s -1 psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack TF6): %s -w6 InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\nYou may also use the decrypted EBOOT file in place of the SHDS file.\n", argv[0], argv[0], argv[0], argv[0], argv[0]);
         return -1;
     }
 
