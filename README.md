@@ -17,15 +17,13 @@ Repacking (TF6 mode): `TFSndEdit -w6 SHDS_file snddat_folder [OutFile.bin]`
 
 Pack single entry: `TFSndEdit -s snddat_folder/X.ini [OutFile.bin]` (where X is the index of the entry)
 
-You *need* to provide the SHDS (sound header) file extracted from the executable (EBOOT.BIN). This is required to properly change the offsets and sizes accordingly. It should be easy to find as the file begins with `SHDS` and ends with `SHDE`.
-
-Any modifications done to the SHDS must be manually written back to the game executable (EBOOT).
+You *need* to provide the SHDS (sound header) file extracted from the executable (EBOOT.BIN) or the decrypted executable itself. A new file will be generated with patched offsets.
 
 Keep in mind that you MUST keep the filenames in the same format as extracted because the utility highly depends on it for file reference and indexing. There are thousands of files, so high speed storage is desirable (SSD at least).
 
 The utility will extract the files as they're found in the banks (including duplicates). Duplicates are auto-detected during repacking process so they won't be packed back again (unless you change the file).
 
-This utility can add sounds too, but you must provide a valid sound header (SHDS) file first.
+This utility can add sounds too, but you must provide or make a valid sound header (SHDS) file first.
 
 ## TODO
 
