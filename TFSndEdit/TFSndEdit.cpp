@@ -543,7 +543,7 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
             }
             Gen_subentries[i].offset = j * sizeof(vagoffsetpair);
             Gen_vagoffsets[j].offset = vag_cursor;
-            Gen_vagoffsets[j].adsr_offset = stoi(entryini[IniSectionGen]["VAG_ADSR_index"]) * 16;
+            Gen_vagoffsets[j].adsr_offset = stoi(entryini[IniSectionGen]["VAG_ADSR_index"]) * ADSREntrySize;
             vag_cursor = vag_cursor + st.st_size + 4;
             j++;
         }
