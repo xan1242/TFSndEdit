@@ -15,6 +15,9 @@ using namespace std;
 #define SNDBNK_TYPE_AT3 0
 #define SNDBNK_TYPE_VAG 1
 
+#define ADSR_ENTRY_SIZE_TF1 0x10
+#define ADSR_ENTRY_SIZE 0x18
+
 #ifdef __GNUC__
 #define path_separator_char '/'
 #define path_separator_str "/"
@@ -52,7 +55,7 @@ struct snddat_entry
 
 struct snddat_subentry
 {
-    int16_t unk1; // seems to be always 0x4064 or 0x407F, 0x4030 for BGP, ADSR?
+    int16_t unk1; // seems to be always 0x4064 or 0x407F, 0x4030 for BGP, ADSR? -- potentially bitrate!!!
     int16_t unk2; // sometimes 5 for voices in tf6, type?
     int16_t unk3;
     int16_t DataType; // 0 for AT3, 1 for VAG
@@ -82,6 +85,8 @@ struct vagoffsetpair
     int32_t adsr_offset; // relative to VAGADSRDataPointer
 };
 
+int ADSREntrySize = ADSR_ENTRY_SIZE;
+
 // SHDS stuff
 void* SHDSbuffer;
 int16_t SHDSver;
@@ -97,6 +102,14 @@ unsigned int PacCount;
 unsigned int SHDStotalsize;
 bool bTF6mode;
 unsigned int TF6voicepacoffset;
+
+// ELF stuff
+long ElfSHDSOffset = 0;
+long ElfSHDSSize = 0;
+bool bElfMode = false;
+void* ElfChunkTop;
+void* ElfChunkBottom;
+int32_t ElfBottomSize;
 
 #ifdef WIN32
 DWORD GetDirectoryListing(const char* FolderPath)
@@ -304,7 +317,7 @@ int ExtractSubEntries(const char* OutFilePath)
        fprintf(DefFile, "[%d]\nunk1 = %hd\nunk2 = %hd\nunk3 = %hd\nunk4 = %d\nunk5 = %d\nunk6 = %d\nunk7 = %d\nunk8 = %d\n", i, subentries[i].unk1, subentries[i].unk2, subentries[i].unk3, subentries[i].unk4, subentries[i].unk5, subentries[i].unk6, subentries[i].unk7, subentries[i].unk8);
        
        if (subentries[i].DataType == SNDBNK_TYPE_VAG)
-           fprintf(DefFile, "VAG_ADSR_index = %d\n", vagoffsets[subentries[i].offset / 8].adsr_offset / 16);
+           fprintf(DefFile, "VAG_ADSR_index = %d\n", vagoffsets[subentries[i].offset / 8].adsr_offset / ADSREntrySize);
        else
            fprintf(DefFile, "VAG_ADSR_index = -1\n");
     }
@@ -316,7 +329,7 @@ int ExtractSubEntries(const char* OutFilePath)
     // check first if this entry contains a VAG at all by checking data pointers (or it could be done by data end pointers, whatever works)
     if (Entry.VAGDataStartPointer != Entry.AT3DataStartPointer)
     {
-        unsigned int ADSRCount = (Entry.DataEndPointer - Entry.VAGADSRDataPointer) / 16;
+        unsigned int ADSRCount = (Entry.DataEndPointer - Entry.VAGADSRDataPointer) / ADSREntrySize;
         fprintf(DefFile, "[VAGADSR]\nCount = %d\n", ADSRCount);
 
         vagadsr* ADSRs = (vagadsr*)((int)EntryBuffer + Entry.VAGADSRDataPointer);
@@ -430,9 +443,9 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     // check if it's a path string
     char* path_detect = strrchr(InFilename, path_separator_char) + 1;
     if (path_detect != NULL)
-        sscanf(path_detect, "%d.ini", &GenEntry.Index);
+        sscanf(path_detect, "%hd.ini", &GenEntry.Index);
     else
-        sscanf(InFilename, "%d.ini", &GenEntry.Index);
+        sscanf(InFilename, "%hd.ini", &GenEntry.Index);
 
     strncpy(EntryName, entryini["Entry"]["Name"].c_str(), 16);
 
@@ -596,19 +609,19 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     }
     else
     {
-        if (GenEntry.HeaderSize == 0x30)
-        {
+      //  if (GenEntry.HeaderSize == 0x30)
+      //  {
             GenEntry.AT3DataStartPointer = GenEntry.DataStartPointer;
             GenEntry.VAGDataStartPointer = GenEntry.DataStartPointer;
             GenEntry.VAGADSRDataPointer = GenEntry.DataStartPointer + at3_cursor;
             GenEntry.DataEndPointer = GenEntry.VAGADSRDataPointer;
-        }
-        else
-        {
-            GenEntry.AT3DataStartPointer = GenEntry.DataStartPointer;
-            GenEntry.DataStartPointer = 0;
+      //  }
+      //  else
+      //  {
+      //      GenEntry.AT3DataStartPointer = GenEntry.DataStartPointer;
+       //     GenEntry.DataStartPointer = 0;
 
-        }
+      //  }
         AlignedEnd = (GenEntry.AT3DataStartPointer + at3_cursor + 0x800) & 0xFFFFF800;
     }
 
@@ -826,7 +839,105 @@ int PackSndDat(char* InFolder, char* OutFilename)
     return 0;
 }
 
-int LoadSHDS(char* InFilename)
+long ScanELF(FILE* fin, long* outOffset)
+{
+    long size = 0;
+    int32_t magic = 0;
+    long oldoffset = ftell(fin);
+    long endoffset = 0;
+
+    while (!feof(fin))
+    {
+        fread(&magic, sizeof(int32_t), 1, fin);
+        if (magic == 0x53444853)
+        {
+            *outOffset = ftell(fin) - 4;
+            break;
+        }
+    }
+
+    fseek(fin, oldoffset, SEEK_SET);
+
+
+    while (!feof(fin))
+    {
+        fread(&magic, sizeof(int32_t), 1, fin);
+        if (magic == 0x45444853)
+        {
+            endoffset = ftell(fin);
+            break;
+        }
+    }
+
+    fseek(fin, oldoffset, SEEK_SET);
+
+    size = endoffset - (*outOffset);
+
+    return size;
+}
+
+void LoadELFChunks(FILE* fin, int32_t filesize)
+{
+    long oldoffset = ftell(fin);
+    ElfBottomSize = filesize - (ElfSHDSOffset + ElfSHDSSize);
+    ElfChunkTop = malloc(ElfSHDSOffset);
+    ElfChunkBottom = malloc(ElfBottomSize);
+    SHDSbuffer = malloc(ElfSHDSSize);
+
+    fread(ElfChunkTop, ElfSHDSOffset, 1, fin);
+    fread(SHDSbuffer, ElfSHDSSize, 1, fin);
+    fread(ElfChunkBottom, ElfBottomSize, 1, fin);
+}
+
+int LoadSHDS_ELF(char* InFilename)
+{
+    FILE* fin = fopen(InFilename, "rb");
+    if (fin == NULL)
+    {
+        printf("ERROR: Error opening file for reading: %s\n", InFilename);
+        perror("ERROR");
+        return -1;
+    }
+
+    ElfSHDSSize = ScanELF(fin, &ElfSHDSOffset);
+    SHDStotalsize = ElfSHDSSize;
+
+    if (ElfSHDSSize)
+    {
+        struct stat fst = { 0 };
+        stat(InFilename, &fst);
+        LoadELFChunks(fin, fst.st_size);
+        fclose(fin);
+
+        // get values and pointers
+        SHDSver = *(int16_t*)(((int)SHDSbuffer) + 0x8);
+        PacCount = *(int16_t*)(((int)SHDSbuffer) + 0xC) + *(int16_t*)(((int)SHDSbuffer) + 0x10);
+
+        int32_t pacoffsets = (*(int16_t*)(((int)SHDSbuffer) + 0xE)) & 0xFFFF;
+        pacoffsets = pacoffsets + PacCount;
+
+        if (SHDSver == 0x24)
+        {
+            pacoffsets = pacoffsets << 3;
+            ADSREntrySize = ADSR_ENTRY_SIZE_TF1;
+        }
+        else
+            pacoffsets = pacoffsets << 2;
+        pacoffsets = pacoffsets + 0x34;
+
+        SHDSsizes = (LoadPacAddr*)(pacoffsets + (int)SHDSbuffer);
+        SHDSoffsets = (int32_t*)(((PacCount << 4) + pacoffsets) + (int)SHDSbuffer);
+
+        if (bTF6mode)
+            TF6voicepacoffset = SHDSoffsets[49];
+    }
+    else
+        fclose(fin);
+
+    return 0;
+}
+
+int LoadSHDS_Single(char* InFilename)
 {
     FILE* fin = fopen(InFilename, "rb");
     if (fin == NULL)
@@ -852,7 +963,10 @@ int LoadSHDS(char* InFilename)
     pacoffsets = pacoffsets + PacCount;
 
     if (SHDSver == 0x24)
+    {
         pacoffsets = pacoffsets << 3;
+        ADSREntrySize = ADSR_ENTRY_SIZE_TF1;
+    }
     else
         pacoffsets = pacoffsets << 2;
     pacoffsets = pacoffsets + 0x34;
@@ -866,6 +980,65 @@ int LoadSHDS(char* InFilename)
     return 0;
 }
 
+int LoadSHDS(char* InFilename)
+{
+    FILE* fin = fopen(InFilename, "rb");
+    int32_t magic = 0;
+    if (fin == NULL)
+    {
+        printf("ERROR: Error opening file for reading: %s\n", InFilename);
+        perror("ERROR");
+        return -1;
+    }
+
+    fread(&magic, sizeof(int32_t), 1, fin);
+    fclose(fin);
+
+    switch (magic)
+    {
+    case 0x464C457F:
+        bElfMode = true;
+        printf("Loading SHDS from ELF\n");
+        LoadSHDS_ELF(InFilename);
+        break;
+    case 0x53444853:
+        printf("Loading SHDS from file\n");
+        LoadSHDS_Single(InFilename);
+        break;
+    default:
+        printf("WARNING: Unknown file passed for SHDS patching! Magic read: 0x%X\n", magic);
+        break;
+    }
+
+    return 0;
+}
+
+int WriteSHDS_ELF(char* OutFilename)
+{
+    strcpy(OutPathSHDS, OutFilename);
+    char* pp = strrchr(OutPathSHDS, '.');
+    if (pp)
+        *pp = 0;
+    strcat(OutPathSHDS, "_EBOOT.BIN");
+
+    printf("Writing SHDS to ELF: %s\n", OutPathSHDS);
+
+    FILE* fout = fopen(OutPathSHDS, "wb");
+    if (fout == NULL)
+    {
+        printf("ERROR: Error opening file for writing: %s\n", OutPathSHDS);
+        perror("ERROR");
+        return -1;
+    }
+
+    fwrite(ElfChunkTop, ElfSHDSOffset, 1, fout);
+    fwrite(SHDSbuffer, ElfSHDSSize, 1, fout);
+    fwrite(ElfChunkBottom, ElfBottomSize, 1, fout);
+    fclose(fout);
+
+    return 0;
+}
+
 int WriteSHDS(char* OutFilename)
 {
     strcpy(OutPathSHDS, OutFilename);
@@ -873,6 +1046,8 @@ int WriteSHDS(char* OutFilename)
     if (pp)
         *pp = 0;
     strcat(OutPathSHDS, "_SHDS.bin");
+
+    printf("Writing SHDS to file: %s\n", OutPathSHDS);
 
     FILE* fout = fopen(OutPathSHDS, "wb");
     if (fout == NULL)
@@ -908,10 +1083,14 @@ int main(int argc, char *argv[])
             strcpy(OutPath, argv[3]);
             strcat(OutPath, ".bin");
         }
-
+        
         LoadSHDS(argv[2]);
         PackSndDat(argv[3], OutPath);
-        WriteSHDS(OutPath);
+
+        if (bElfMode)
+            WriteSHDS_ELF(OutPath);
+        else
+            WriteSHDS(OutPath);
         return 0;
     }
     // single write...
