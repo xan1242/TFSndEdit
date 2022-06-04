@@ -55,7 +55,7 @@ struct snddat_entry
 
 struct snddat_subentry
 {
-    int16_t unk1; // seems to be always 0x4064 or 0x407F, 0x4030 for BGP, ADSR? -- potentially bitrate!!!
+    int16_t unk1; // seems to be always 0x4064 or 0x407F, 0x4030 for BGP, ADSR? -- affects volume
     int16_t unk2; // sometimes 5 for voices in tf6, type?
     int16_t unk3;
     int16_t DataType; // 0 for AT3, 1 for VAG
@@ -79,6 +79,14 @@ struct vagadsr
     int16_t unk8;
 };
 
+struct vagadsr_ext
+{
+    int16_t unk9;
+    int16_t unk10;
+    int16_t unk11;
+    int16_t unk12;
+}adsr_ext_dummy;
+
 struct vagoffsetpair
 {
     int32_t offset; // relative to VAGDataStartPointer
@@ -101,6 +109,7 @@ struct LoadPacAddr
 unsigned int PacCount;
 unsigned int SHDStotalsize;
 bool bTF6mode;
+bool bTF1mode;
 unsigned int TF6voicepacoffset;
 
 // ELF stuff
@@ -332,18 +341,30 @@ int ExtractSubEntries(const char* OutFilePath)
         unsigned int ADSRCount = (Entry.DataEndPointer - Entry.VAGADSRDataPointer) / ADSREntrySize;
         fprintf(DefFile, "[VAGADSR]\nCount = %d\n", ADSRCount);
 
-        vagadsr* ADSRs = (vagadsr*)((int)EntryBuffer + Entry.VAGADSRDataPointer);
+        vagadsr* ADSRbase = (vagadsr*)((int)EntryBuffer + Entry.VAGADSRDataPointer);
+        vagadsr_ext* ADSR_ext = &adsr_ext_dummy;
+        unsigned int asdr_cursor = 0;
+        vagadsr* ADSRs = ADSRbase;
 
         for (int i = 0; i < ADSRCount; i++)
         {
-            fprintf(DefFile, "ADSR_%d_unk1 = 0x%hX\n", i, ADSRs[i].unk1);
-            fprintf(DefFile, "ADSR_%d_unk2 = 0x%hX\n", i, ADSRs[i].unk2);
-            fprintf(DefFile, "ADSR_%d_unk3 = 0x%hX\n", i, ADSRs[i].unk3);
-            fprintf(DefFile, "ADSR_%d_unk4 = 0x%hX\n", i, ADSRs[i].unk4);
-            fprintf(DefFile, "ADSR_%d_unk5 = 0x%hX\n", i, ADSRs[i].unk5);
-            fprintf(DefFile, "ADSR_%d_unk6 = 0x%hX\n", i, ADSRs[i].unk6);
-            fprintf(DefFile, "ADSR_%d_unk7 = 0x%hX\n", i, ADSRs[i].unk7);
-            fprintf(DefFile, "ADSR_%d_unk8 = 0x%hX\n", i, ADSRs[i].unk8);
+            asdr_cursor = ADSREntrySize * i;
+            ADSRs = (vagadsr*)(((int)ADSRbase) + asdr_cursor);
+
+            fprintf(DefFile, "ADSR_%d_unk1 = 0x%hX\n", i, ADSRs->unk1);
+            fprintf(DefFile, "ADSR_%d_unk2 = 0x%hX\n", i, ADSRs->unk2);
+            fprintf(DefFile, "ADSR_%d_unk3 = 0x%hX\n", i, ADSRs->unk3);
+            fprintf(DefFile, "ADSR_%d_unk4 = 0x%hX\n", i, ADSRs->unk4);
+            fprintf(DefFile, "ADSR_%d_unk5 = 0x%hX\n", i, ADSRs->unk5);
+            fprintf(DefFile, "ADSR_%d_unk6 = 0x%hX\n", i, ADSRs->unk6);
+            fprintf(DefFile, "ADSR_%d_unk7 = 0x%hX\n", i, ADSRs->unk7);
+            fprintf(DefFile, "ADSR_%d_unk8 = 0x%hX\n", i, ADSRs->unk8);
+            if (!bTF1mode)
+                ADSR_ext = (vagadsr_ext*)(((int)ADSRs) + ADSR_ENTRY_SIZE_TF1);
+            fprintf(DefFile, "ADSR_%d_unk9 = 0x%hX\n", i, ADSR_ext->unk9);
+            fprintf(DefFile, "ADSR_%d_unk10 = 0x%hX\n", i, ADSR_ext->unk10);
+            fprintf(DefFile, "ADSR_%d_unk11 = 0x%hX\n", i, ADSR_ext->unk11);
+            fprintf(DefFile, "ADSR_%d_unk12 = 0x%hX\n", i, ADSR_ext->unk12);
         }
     }
     else
@@ -435,6 +456,7 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     snddat_subentry* Gen_subentries = NULL;
     vagoffsetpair* Gen_vagoffsets = NULL;
     vagadsr* Gen_ADSRs = NULL;
+    vagadsr_ext* Gen_ADSR_ext = NULL;
 
     // set start magic...
     GenEntry.StartPointerMagic = 0x5053;
@@ -494,6 +516,7 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
         // create vag objects...
         Gen_vagoffsets = (vagoffsetpair*)calloc(vag_count, sizeof(vagoffsetpair));
         Gen_ADSRs = (vagadsr*)calloc(vag_count, sizeof(vagadsr));
+        Gen_ADSR_ext = (vagadsr_ext*)calloc(vag_count, sizeof(vagadsr_ext));
 
         GenEntry.VAGDataStartPointer = (vag_count * sizeof(vagoffsetpair)) + GenEntry.DataStartPointer;
         // load up the ADSRs
@@ -523,6 +546,18 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
 
             sprintf(IniSectionGen, "ADSR_%d_unk8", i);
             Gen_ADSRs[i].unk8 = (int16_t)stoi(entryini["VAGADSR"][IniSectionGen], 0, 16);
+
+            sprintf(IniSectionGen, "ADSR_%d_unk9", i);
+            Gen_ADSR_ext[i].unk9 = (int16_t)stoi(entryini["VAGADSR"][IniSectionGen], 0, 16);
+
+            sprintf(IniSectionGen, "ADSR_%d_unk10", i);
+            Gen_ADSR_ext[i].unk10 = (int16_t)stoi(entryini["VAGADSR"][IniSectionGen], 0, 16);
+
+            sprintf(IniSectionGen, "ADSR_%d_unk11", i);
+            Gen_ADSR_ext[i].unk11 = (int16_t)stoi(entryini["VAGADSR"][IniSectionGen], 0, 16);
+
+            sprintf(IniSectionGen, "ADSR_%d_unk12", i);
+            Gen_ADSR_ext[i].unk12 = (int16_t)stoi(entryini["VAGADSR"][IniSectionGen], 0, 16);
         }
     }
 
@@ -604,7 +639,7 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     {
         GenEntry.AT3DataStartPointer = vag_cursor + GenEntry.VAGDataStartPointer;
         GenEntry.VAGADSRDataPointer = GenEntry.AT3DataStartPointer + at3_cursor;
-        GenEntry.DataEndPointer = GenEntry.VAGADSRDataPointer + (adsr_count * sizeof(vagadsr));
+        GenEntry.DataEndPointer = GenEntry.VAGADSRDataPointer + (adsr_count * ADSREntrySize);
         AlignedEnd = (GenEntry.DataEndPointer + 0x800) & 0xFFFFF800;
     }
     else
@@ -744,6 +779,8 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     for (int i = 0; i < adsr_count; i++)
     {
         fwrite(&Gen_ADSRs[i], sizeof(vagadsr), 1, OutFile);
+        if (SHDSver != 0x24)
+            fwrite(&Gen_ADSR_ext[i], sizeof(vagadsr_ext), 1, OutFile);
     }
     // write padding & EP
     fseek(OutFile, (FilePos + AlignedEnd) - sizeof(int32_t), SEEK_SET);
@@ -755,6 +792,7 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
     if (vag_count)
     {
         free(Gen_ADSRs);
+        free(Gen_ADSR_ext);
         free(Gen_vagoffsets);
     }
 
@@ -1067,7 +1105,7 @@ int main(int argc, char *argv[])
     printf("Yu-Gi-Oh! Tag Force SNDDAT repacker\n");
     if (argc < 2)
     {
-        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack TF6): %s -w6 InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\n", argv[0], argv[0], argv[0], argv[0]);
+        printf("ERROR: Too few arguments.\nUSAGE (extraction): %s psp_snddat.bin [OutDir]\nUSAGE (extraction TF1): %s -1 psp_snddat.bin [OutDir]\nUSAGE (pack): %s -w InSHDS InDir [OutFilename]\nUSAGE (pack TF6): %s -w6 InSHDS InDir [OutFilename]\nUSAGE (pack single): %s -s InIniFile [OutFile]\n", argv[0], argv[0], argv[0], argv[0], argv[0]);
         return -1;
     }
 
@@ -1114,6 +1152,27 @@ int main(int argc, char *argv[])
 
         return PackEntry(argv[2], OutPath, OutFile);
     }
+    if (argv[1][0] == '-' && argv[1][1] == '1')
+    {
+        bTF1mode = true;
+        ADSREntrySize = ADSR_ENTRY_SIZE_TF1;
+        if (argv[3] != NULL)
+            strcpy(OutPath, argv[3]);
+        else
+        {
+            char* autogen;
+            strcpy(OutPath, argv[2]);
+            autogen = strrchr(OutPath, '.');
+            if (autogen)
+                *autogen = 0;
+        }
+
+        printf("Creating directory: %s\n", OutPath);
+        sprintf(MkDirString, "mkdir \"%s\"", OutPath);
+        system(MkDirString);
+
+        return ExtractSndDat(argv[2], OutPath);
+    }
 
     if (argv[2] != NULL)
         strcpy(OutPath, argv[2]);
@@ -1125,6 +1184,8 @@ int main(int argc, char *argv[])
         if (autogen)
             *autogen = 0;
     }
+
+    ADSREntrySize = ADSR_ENTRY_SIZE;
 
     printf("Creating directory: %s\n", OutPath);
     sprintf(MkDirString, "mkdir \"%s\"", OutPath);
