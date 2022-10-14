@@ -40,6 +40,8 @@ char** FileDirectoryListing;
 unsigned int FileCount;
 char WorkFileName[512];
 
+int cur_idx;
+
 struct snddat_entry
 {
     int16_t StartPointerMagic; // always SP or 0x5053
@@ -153,7 +155,7 @@ DWORD GetDirectoryListing(const char* FolderPath)
         if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
         {
             wcstombs(MBFilename, ffd.cFileName, MAX_PATH);
-            if (strstr(MBFilename, ".ini") != 0)
+            if ((strstr(MBFilename, ".ini") != 0) || (strstr(MBFilename, ".vag") != 0))
                 FileCount++;
         }
     } while (FindNextFile(hFind, &ffd) != 0);
@@ -181,7 +183,7 @@ DWORD GetDirectoryListing(const char* FolderPath)
         if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
         {
             wcstombs(MBFilename, ffd.cFileName, MAX_PATH);
-            if (strstr(MBFilename, ".ini") != 0)
+            if ((strstr(MBFilename, ".ini") != 0) || (strstr(MBFilename, ".vag") != 0))
             {
                 FileDirectoryListing[NameCounter] = (char*)calloc(strlen(MBFilename) + 1, sizeof(char));
                 strcpy(FileDirectoryListing[NameCounter], MBFilename);
@@ -214,7 +216,7 @@ void GetDirectoryListing(const char* FolderPath)
         // ignore the current and previous dir files...
         if (!((strcmp(dp->d_name, ".") == 0) || (strcmp(dp->d_name, "..") == 0)))
         {
-            if (strstr(MBFilename, ".ini") != 0)
+            if ((strstr(MBFilename, ".ini") != 0) || (strstr(MBFilename, ".vag") != 0))
             {
                 FileCount++;
             }
@@ -231,7 +233,7 @@ void GetDirectoryListing(const char* FolderPath)
         // ignore the current and previous dir files...
         if (!((strcmp(dp->d_name, ".") == 0) || (strcmp(dp->d_name, "..") == 0)))
         {
-            if (strstr(MBFilename, ".ini") != 0)
+            if ((strstr(MBFilename, ".ini") != 0) || (strstr(MBFilename, ".vag") != 0))
             {
                 FileDirectoryListing[NameCounter] = (char*)calloc(strlen(dp->d_name) + 1, sizeof(char));
                 strcpy(FileDirectoryListing[NameCounter], dp->d_name);
@@ -244,6 +246,25 @@ void GetDirectoryListing(const char* FolderPath)
 #endif
 
 #endif
+
+struct VAGHeader
+{
+    uint32_t magic = 0x70474156;
+    uint32_t bitdepth = 0x20000000;
+    uint32_t pad1;
+    uint32_t size;
+    uint16_t pad2;
+    uint16_t rate;
+    uint8_t pad[0xC];
+    uint8_t name[16];
+}vag_head;
+
+void GenerateVAGHeader(uint32_t size, uint16_t rate, uint8_t* name)
+{
+    vag_head.size = _byteswap_ulong(size);
+    vag_head.rate = _byteswap_ushort(rate);
+    memcpy(vag_head.name, name, 16);
+}
 
 unsigned int FindMinIniNumber()
 {
@@ -270,7 +291,28 @@ unsigned int FindMaxIniNumber()
         if (ReadNum > BiggestNum)
             BiggestNum = ReadNum;
     }
+
     return BiggestNum;
+}
+
+uint16_t GetVAGUnkNum(int idx, int subidx)
+{
+    // search for appropriate VAG from the file dir list instead... we do this to read the unknown number appended before the extension
+    char searchstr[16];
+    int dl_idx = 0;
+    uint16_t unk_vag_val = 0;
+    uint32_t dummy = 0;
+    sprintf(searchstr, "%d_%d_", idx, subidx);
+    for (int y = 0; y < FileCount; y++)
+    {
+        if (strstr(FileDirectoryListing[y], searchstr))
+        {
+            dl_idx = y;
+            break;
+        }
+    }
+    sscanf(FileDirectoryListing[dl_idx], "%d_%d_%hd.vag", &dummy, &dummy, &unk_vag_val);
+    return unk_vag_val;
 }
 
 bool bFileExists(const char* Filename)
@@ -379,7 +421,8 @@ int ExtractSubEntries(const char* OutFilePath)
         {
             CurrentDataOffset = Entry.VAGDataStartPointer + vagoffsets[subentries[i].offset / 8].offset + 4;
             CurrentDataSize = *(int32_t*)((int)EntryBuffer + (CurrentDataOffset - 4)) + 4;
-            sprintf(OutFileName, "%s/%d_%d.vag", OutFilePath, Entry.Index, i);
+            uint16_t VAGunkparam = *(uint16_t*)((int)EntryBuffer + CurrentDataOffset);
+            sprintf(OutFileName, "%s/%d_%d_%hd.vag", OutFilePath, Entry.Index, i, VAGunkparam);
         }
         else
         {
@@ -397,7 +440,19 @@ int ExtractSubEntries(const char* OutFilePath)
             perror("ERROR");
             return -1;
         }
-        fwrite((void*)((int)EntryBuffer + CurrentDataOffset), CurrentDataSize, 1, OutFile);
+        if (subentries[i].DataType == SNDBNK_TYPE_VAG)
+        {
+            uint8_t VAGname[16];
+            memset(VAGname, 0, 16);
+            sprintf((char*)VAGname, "%d_%d", Entry.Index, i);
+            GenerateVAGHeader(CurrentDataSize - 4, *(uint16_t*)((int)EntryBuffer + CurrentDataOffset + 2), VAGname);
+            fwrite(&vag_head, sizeof(VAGHeader), 1, OutFile);
+            fwrite((void*)((int)EntryBuffer + CurrentDataOffset + 4), CurrentDataSize - 4, 1, OutFile);
+        }
+        else
+        {
+            fwrite((void*)((int)EntryBuffer + CurrentDataOffset), CurrentDataSize, 1, OutFile);
+        }
 
         fclose(OutFile);
     }
@@ -569,7 +624,8 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
 
         if (Gen_subentries[i].DataType == SNDBNK_TYPE_VAG)
         {
-            sprintf(FileExtPoint, "_%d.vag", i);
+            uint16_t unk_vag_val = GetVAGUnkNum(cur_idx, i);
+            sprintf(FileExtPoint, "_%d_%hd.vag", i, unk_vag_val);
             sprintf(IniSectionGen, "%d", i);
             if (stat(AudioFilename, &st))
             {
@@ -579,7 +635,7 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
             Gen_subentries[i].offset = j * sizeof(vagoffsetpair);
             Gen_vagoffsets[j].offset = vag_cursor;
             Gen_vagoffsets[j].adsr_offset = stoi(entryini[IniSectionGen]["VAG_ADSR_index"]) * ADSREntrySize;
-            vag_cursor = vag_cursor + st.st_size + 4;
+            vag_cursor = vag_cursor + (st.st_size - 0x30) + 8;
             j++;
         }
         else
@@ -691,7 +747,9 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
             {
                 strcpy(AudioFilename, InFilename);
                 FileExtPoint = strrchr(AudioFilename, '.');
-                sprintf(FileExtPoint, "_%d.vag", i);
+                uint16_t unk_vag_num = GetVAGUnkNum(cur_idx, i);
+                uint16_t samprate = 0;
+                sprintf(FileExtPoint, "_%d_%hd.vag", i, unk_vag_num);
                 sprintf(IniSectionGen, "%d", i);
 
                 if (stat(AudioFilename, &st))
@@ -712,17 +770,23 @@ int PackEntry(char* InFilename, char* OutFilename, FILE* OutFile)
                 // read file to memory
                 AudioFileBuffer = malloc(st.st_size);
                 fread(AudioFileBuffer, st.st_size, 1, InFile);
+                fseek(InFile, 0, SEEK_SET);
+                fread(&vag_head, sizeof(VAGHeader), 1, InFile);
                 fclose(InFile);
 
+                samprate = _byteswap_ushort(vag_head.rate);
+
                 // write size and then the file after it
-                vag_size = st.st_size - 4;
+                vag_size = st.st_size - 0x30;
                 fwrite(&vag_size, sizeof(int32_t), 1, OutFile);
-                fwrite(AudioFileBuffer, st.st_size, 1, OutFile);
+                fwrite(&unk_vag_num, sizeof(uint16_t), 1, OutFile);
+                fwrite(&samprate, sizeof(uint16_t), 1, OutFile);
+                fwrite((void*)((int)AudioFileBuffer + 0x30), st.st_size - 0x30, 1, OutFile);
 
                 // free memory
                 free(AudioFileBuffer);
 
-                data_cursor = data_cursor + st.st_size + 4;
+                data_cursor = data_cursor + (st.st_size - 0x30) + 8;
             }
         }
     }
@@ -864,6 +928,7 @@ int PackSndDat(char* InFolder, char* OutFilename)
 
     for (int i = startpoint; i <= endpoint; i++)
     {
+        cur_idx = i;
         sprintf(WorkFileName, "%s%s%d.ini", InFolder, path_separator_str, i);
 
         if (bFileExists(WorkFileName))
